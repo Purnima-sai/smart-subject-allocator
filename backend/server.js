@@ -25,6 +25,7 @@ const studentRoutes = require('./routes/studentRoutes');
 const facultyRoutes = require('./routes/facultyRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const allocationRoutes = require('./routes/allocationRoutes');
+const subjectRoutes = require('./routes/subjectRoutes');
 
 const app = express();
 app.use(cors());
@@ -42,29 +43,26 @@ app.use('/api/students', studentRoutes);
 app.use('/api/faculty', facultyRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/allocation', allocationRoutes);
+app.use('/api/subjects', subjectRoutes);
 
 // error handler
 app.use(errorHandler);
 
-const PORT = process.env.PORT || 5000;
-const startServer = (port) => {
-  try {
-    const server = app.listen(port, () => {
-      logger.info(`Server running on port ${port}`);
-    });
-
-    server.on('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        logger.warn(`Port ${port} is busy, trying ${port + 1}...`);
-        startServer(port + 1);
-      } else {
-        logger.error('Server error:', err);
-      }
-    });
-  } catch (err) {
-    logger.error('Failed to start server:', err);
-    process.exit(1);
-  }
-};
-
-startServer(PORT);
+const PORT = Number(process.env.PORT) || 5001;
+try {
+  const server = app.listen(PORT, () => {
+    logger.info(`Server running on port ${PORT}`);
+  });
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      logger.error(`Port ${PORT} is already in use. Please free it or change PORT in .env`);
+      process.exit(1);
+    } else {
+      logger.error('Server error:', err);
+      process.exit(1);
+    }
+  });
+} catch (err) {
+  logger.error('Failed to start server:', err);
+  process.exit(1);
+}

@@ -60,17 +60,95 @@ exports.uploadStudents = async (req, res, next) => {
 // Subject CRUD
 exports.createSubject = async (req, res, next) => {
   try {
-    const { code, title, capacity, instructor } = req.body;
-    const existing = await Subject.findOne({ code });
-    if (existing) return res.status(400).json({ message: 'Subject code exists' });
-    const subject = await Subject.create({ code, title, capacity: capacity || 30, instructor });
-    res.status(201).json({ subject });
+    let { code, title, capacity, instructor, year, semester, department, credits, hours, description, topics, faculty } = req.body;
+    if (year == null || semester == null) return res.status(400).json({ message: 'year and semester are required' });
+
+    // Auto-generate a code if not provided. If generated code collides, retry until unique.
+    if (!code || !String(code).trim()) {
+      const base = (title || 'SUBJ').toUpperCase().replace(/[^A-Z0-9]+/g, '_').slice(0, 12);
+      let attempt = 0;
+      let candidate;
+      do {
+        candidate = `${base}_${Math.random().toString(36).slice(-4).toUpperCase()}`;
+        attempt += 1;
+        // safety: avoid infinite loop
+        if (attempt > 10) break;
+      } while (await Subject.exists({ code: candidate }));
+      code = candidate;
+    } else {
+      // if provided and collides, try to make it unique by appending random suffix
+      if (await Subject.exists({ code })) {
+        const base = String(code).toUpperCase().replace(/[^A-Z0-9]+/g, '_').slice(0, 12);
+        let attempt = 0;
+        let candidate;
+        do {
+          candidate = `${base}_${Math.random().toString(36).slice(-4).toUpperCase()}`;
+          attempt += 1;
+          if (attempt > 10) break;
+        } while (await Subject.exists({ code: candidate }));
+        code = candidate;
+      }
+    }
+
+    const created = await Subject.create({
+      code,
+      title,
+      capacity: capacity || 30,
+      instructor,
+      year: Number(year),
+      semester: Number(semester),
+      department: department || undefined,
+      credits: credits || 3,
+      hours: hours || 3,
+      description: description || '',
+      topics: Array.isArray(topics) ? topics : [],
+      faculty: faculty || '',
+    });
+
+  // fetch populated and ensure code is present in returned object
+  const subject = await Subject.findById(created._id).populate('instructor', 'name email').lean();
+  // in rare cases older documents or race conditions may leave code undefined in the returned object
+  // ensure we always return a code string to the client (fallback to the generated code)
+  if (!subject.code) subject.code = code;
+  res.status(201).json({ subject });
+  } catch (err) { next(err); }
+};
+
+// Backfill codes for existing subjects that don't have a code
+exports.backfillSubjectCodes = async (req, res, next) => {
+  try {
+    const subjects = await Subject.find({ $or: [{ code: { $exists: false } }, { code: null }, { code: '' }] });
+    const updates = [];
+    for (const s of subjects) {
+      const base = (s.title || 'SUBJ').toUpperCase().replace(/[^A-Z0-9]+/g, '_').slice(0, 12);
+      let code = `${base}_${Math.random().toString(36).slice(-4).toUpperCase()}`;
+      // ensure unique
+      while (await Subject.findOne({ code })) {
+        code = `${base}_${Math.random().toString(36).slice(-4).toUpperCase()}`;
+      }
+      s.code = code;
+      await s.save();
+      updates.push({ id: s._id, code });
+    }
+    res.json({ updated: updates.length, details: updates });
+  } catch (err) { next(err); }
+};
+
+// Dangerous: clear all subjects (admin only) — useful for demos to start clean
+exports.clearAllSubjects = async (req, res, next) => {
+  try {
+    await Subject.deleteMany({});
+    res.json({ message: 'All subjects cleared' });
   } catch (err) { next(err); }
 };
 
 exports.listSubjects = async (req, res, next) => {
   try {
-    const subjects = await Subject.find().populate('instructor');
+    const { year, semester } = req.query;
+    const criteria = {};
+    if (year != null) criteria.year = Number(year);
+    if (semester != null) criteria.semester = Number(semester);
+    const subjects = await Subject.find(criteria).populate('instructor').lean();
     res.json({ subjects });
   } catch (err) { next(err); }
 };
@@ -78,7 +156,21 @@ exports.listSubjects = async (req, res, next) => {
 exports.updateSubject = async (req, res, next) => {
   try {
     const id = req.params.id;
-    const update = req.body;
+    const { title, capacity, year, semester, department, credits, hours, description, topics, faculty } = req.body;
+    const update = {
+      title,
+      capacity,
+      year: year != null ? Number(year) : undefined,
+      semester: semester != null ? Number(semester) : undefined,
+      department,
+      credits,
+      hours,
+      description,
+      topics: Array.isArray(topics) ? topics : undefined,
+      faculty,
+    };
+    // Remove undefined values
+    Object.keys(update).forEach(key => update[key] === undefined && delete update[key]);
     const subject = await Subject.findByIdAndUpdate(id, update, { new: true });
     res.json({ subject });
   } catch (err) { next(err); }
@@ -89,6 +181,23 @@ exports.deleteSubject = async (req, res, next) => {
     const id = req.params.id;
     await Subject.findByIdAndDelete(id);
     res.json({ message: 'Deleted' });
+  } catch (err) { next(err); }
+};
+
+// Seed default subjects if collection empty
+exports.seedDefaults = async (req, res, next) => {
+  try {
+    const count = await Subject.countDocuments();
+    if (count > 0) return res.status(400).json({ message: 'Subjects already exist' });
+    const sample = [
+      { code: 'JAVA_Y2S1', title: 'Java Programming', capacity: 40, year: 2, semester: 1 },
+      { code: 'DBMS_Y2S1', title: 'Database Systems', capacity: 35, year: 2, semester: 1 },
+      { code: 'ML_Y3S2', title: 'Intro to Machine Learning', capacity: 30, year: 3, semester: 2 },
+      { code: 'AI_Y3S2', title: 'Artificial Intelligence', capacity: 30, year: 3, semester: 2 },
+      { code: 'NET_Y4S1', title: 'Computer Networks', capacity: 30, year: 4, semester: 1 },
+    ];
+    const inserted = await Subject.insertMany(sample);
+    res.json({ message: 'Seeded', subjects: inserted });
   } catch (err) { next(err); }
 };
 
@@ -131,4 +240,53 @@ exports.exportAllotments = async (req, res, next) => {
     archive.finalize();
 
   } catch (err) { next(err); }
+};
+
+// Get all students with their registered preferences
+exports.getRegisteredElectives = async (req, res, next) => {
+  try {
+    console.log('=== FETCHING REGISTERED ELECTIVES ===');
+    // Fetch all students who have submitted preferences
+    const students = await Student.find({ preferences: { $exists: true, $ne: [] } })
+      .populate('user', 'name email')
+      .populate('preferences', 'code title year semester')
+      .lean();
+
+    console.log(`Found ${students.length} students with preferences`);
+
+    const registrations = students.map(student => ({
+      studentId: student._id,
+      rollNumber: student.rollNumber,
+      name: student.user?.name || 'N/A',
+      email: student.user?.email || 'N/A',
+      department: student.department,
+      year: student.year,
+      semester: student.semester,
+      cgpa: student.cgpa,
+      preferencesLocked: student.preferencesLocked || false,
+      submittedAt: student.preferencesSubmittedAt,
+      preferences: (student.preferences || []).map((pref, index) => ({
+        priority: index + 1,
+        subjectId: pref._id,
+        code: pref.code,
+        title: pref.title,
+        year: pref.year,
+        semester: pref.semester
+      }))
+    }));
+
+    const lockedCount = registrations.filter(r => r.preferencesLocked).length;
+    console.log(`Locked: ${lockedCount}, Draft: ${registrations.length - lockedCount}`);
+    console.log('=== FETCH COMPLETE ===\n');
+
+    res.json({ 
+      registrations,
+      totalCount: registrations.length,
+      lockedCount: lockedCount,
+      message: `${registrations.length} students have registered their preferences`
+    });
+  } catch (err) { 
+    console.error('Error fetching registered electives:', err);
+    next(err); 
+  }
 };

@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getSubjects, saveSubjects } from '../utils/auth';
 import AdminHeader from '../../components/AdminHeader';
-import sampleSubjects from '../data/sampleSubjects';
 import { Pie, Doughnut, Bar } from 'react-chartjs-2';
 import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement } from 'chart.js';
 
@@ -26,15 +24,9 @@ export default function AdminDashboard(){
     marginBottom: '2rem'
   };
   
-  useEffect(() => {
-    const token = localStorage.getItem('token');
-    const userType = localStorage.getItem('userType');
-    if (!token || userType !== 'admin') {
-      navigate('/login');
-    }
-  }, [navigate]);
   const [newSubject, setNewSubject] = useState({name:'', credits:3, hours:3, capacity:30, faculty:'', description:'', topics:'', year:'', semester:''});
   const [editingSubject, setEditingSubject] = useState(null);
+  const [registeredStudents, setRegisteredStudents] = useState([]);
   const [allocationHistory, setAllocationHistory] = useState([]);
   const [systemSettings, setSystemSettings] = useState({
     maxPreferences: 5,
@@ -69,15 +61,43 @@ export default function AdminDashboard(){
   };
 
   useEffect(()=>{
-    let s = getSubjects();
-    if(!s){
-      saveSubjects(sampleSubjects);
-      s = sampleSubjects;
-    }
-    setSubjects(s);
-    computeStats(s);
-    loadAllocationHistory();
-    loadSystemSettings();
+    // Load subjects from backend instead of localStorage
+    const loadSubjects = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const resp = await fetch('/api/admin/subjects', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          const mapped = (data.subjects || []).map(s => ({
+            id: s._id,
+            code: s.code,
+            name: s.title,
+            capacity: s.capacity,
+            faculty: s.instructor?.name || '',
+            year: String(s.year),
+            semester: String(s.semester),
+            credits: s.credits || 3,
+            hours: s.hours || 3,
+            description: s.description || '',
+            topics: s.topics || [],
+          }));
+          setSubjects(mapped);
+          computeStats(mapped);
+        } else {
+          setSubjects([]);
+        }
+      } catch (e) {
+        console.error('Failed to load subjects', e);
+        setSubjects([]);
+      } finally {
+        loadAllocationHistory();
+        loadSystemSettings();
+        fetchRegisteredElectives(); // Load registered students on mount
+      }
+    };
+    loadSubjects();
   },[]);
 
   function loadAllocationHistory() {
@@ -171,7 +191,7 @@ export default function AdminDashboard(){
   function executeAllocation() {
     const users = JSON.parse(localStorage.getItem('ssaems_users')||'[]').filter(u=>u.role==='student');
     const prefs = JSON.parse(localStorage.getItem('ssaems_prefs')||'{}');
-    const subjList = getSubjects();
+  const subjList = subjects;
     const cap = {};
     subjList.forEach(s=> cap[s.id] = s.capacity || 30);
     users.sort((a,b)=> (parseFloat(b.cgpa||0) - parseFloat(a.cgpa||0)));
@@ -220,21 +240,65 @@ export default function AdminDashboard(){
     a.href = url; a.download = 'allotments.csv'; a.click();
   }
 
-  function addSubject() {
+  async function addSubject() {
     if (!newSubject.name.trim()) return alert('Subject name is required');
     if (!newSubject.year) return alert('Year is required');
     if (!newSubject.semester) return alert('Semester is required');
-    const id = 'S' + (subjects.length + 1);
-    const subject = {
-      ...newSubject,
-      id,
-      topics: newSubject.topics.split(',').map(t => t.trim()).filter(t => t)
-    };
-    const updatedSubjects = [...subjects, subject];
-    setSubjects(updatedSubjects);
-    saveSubjects(updatedSubjects);
-    setNewSubject({name:'', credits:3, hours:3, capacity:30, faculty:'', description:'', topics:'', year:'', semester:''});
-    alert('Subject added successfully!');
+    try {
+      const token = localStorage.getItem('token');
+      console.log('Admin token for subject creation:', token ? token.substring(0, 20) + '...' : 'NO TOKEN');
+      if (!token) {
+        alert('No authentication token found. Please log in again.');
+        return;
+      }
+      // Generate a simple code if not provided
+      const code = (newSubject.name || 'SUBJ').toUpperCase().replace(/[^A-Z0-9]+/g, '_').slice(0, 12) + '_' + Math.random().toString(36).slice(-4).toUpperCase();
+      const body = {
+        code,
+        title: newSubject.name,
+        capacity: Number(newSubject.capacity) || 30,
+        year: Number(newSubject.year),
+        semester: Number(newSubject.semester),
+        credits: Number(newSubject.credits) || 3,
+        hours: Number(newSubject.hours) || 3,
+        description: newSubject.description || '',
+        topics: (newSubject.topics || '').split(',').map(t => t.trim()).filter(Boolean),
+        faculty: newSubject.faculty || '',
+      };
+      const resp = await fetch('/api/admin/subjects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(body)
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.message || 'Failed to create subject');
+      }
+      const data = await resp.json();
+      const s = data.subject;
+      const mapped = {
+        id: s._id,
+        code: s.code || code,
+        name: s.title,
+        capacity: s.capacity,
+        faculty: s.instructor?.name || '',
+        year: String(s.year),
+        semester: String(s.semester),
+        credits: newSubject.credits,
+        hours: newSubject.hours,
+        description: newSubject.description,
+        topics: (newSubject.topics || '').split(',').map(t => t.trim()).filter(Boolean),
+      };
+      const updated = [...subjects, mapped];
+      setSubjects(updated);
+      computeStats(updated);
+      setNewSubject({name:'', credits:3, hours:3, capacity:30, faculty:'', description:'', topics:'', year:'', semester:''});
+      alert('Subject added successfully!');
+      // signal other tabs/windows (students) to refresh
+      try { localStorage.setItem('ssaems_subjects_dirty', String(Date.now())); } catch (_) {}
+    } catch (e) {
+      alert(e.message);
+    }
   }
 
   function editSubject(subject) {
@@ -244,31 +308,80 @@ export default function AdminDashboard(){
     });
   }
 
-  function updateSubject() {
+  async function updateSubject() {
     if (!editingSubject.year) return alert('Year is required');
     if (!editingSubject.semester) return alert('Semester is required');
-    
-    const updatedSubjects = subjects.map(s => 
-      s.id === editingSubject.id 
-        ? {
-            ...editingSubject,
-            topics: (editingSubject.topics || '').split(',').map(t => t.trim()).filter(t => t)
-          }
-        : s
-    );
-    setSubjects(updatedSubjects);
-    saveSubjects(updatedSubjects);
-    setEditingSubject(null);
-    alert('Subject updated successfully!');
+    try {
+      const token = localStorage.getItem('token');
+      const body = {
+        title: editingSubject.name,
+        capacity: Number(editingSubject.capacity) || 30,
+        year: Number(editingSubject.year),
+        semester: Number(editingSubject.semester),
+        credits: Number(editingSubject.credits) || 3,
+        hours: Number(editingSubject.hours) || 3,
+        description: editingSubject.description || '',
+        topics: typeof editingSubject.topics === 'string' 
+          ? editingSubject.topics.split(',').map(t => t.trim()).filter(Boolean)
+          : editingSubject.topics || [],
+        faculty: editingSubject.faculty || '',
+      };
+      const resp = await fetch(`/api/admin/subjects/${editingSubject.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(body)
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.message || 'Failed to update subject');
+      }
+      const data = await resp.json();
+      const s = data.subject;
+      const mapped = {
+        id: s._id,
+        name: s.title,
+        code: s.code,
+        capacity: s.capacity,
+        faculty: s.instructor?.name || s.faculty || '',
+        year: String(s.year),
+        semester: String(s.semester),
+        credits: s.credits || 3,
+        hours: s.hours || 3,
+        description: s.description || '',
+        topics: Array.isArray(s.topics) ? s.topics : [],
+      };
+      const updated = subjects.map(x => x.id === mapped.id ? mapped : x);
+      setSubjects(updated);
+      computeStats(updated);
+      setEditingSubject(null);
+      alert('Subject updated successfully!');
+      try { localStorage.setItem('ssaems_subjects_dirty', String(Date.now())); } catch (_) {}
+    } catch (e) {
+      alert(e.message);
+    }
   }
 
-  function deleteSubject(id) {
+  async function deleteSubject(id) {
     const userConfirmed = window.confirm('Are you sure you want to delete this subject?');
     if (!userConfirmed) return;
-    const updatedSubjects = subjects.filter(s => s.id !== id);
-    setSubjects(updatedSubjects);
-    saveSubjects(updatedSubjects);
-    alert('Subject deleted successfully!');
+    try {
+      const token = localStorage.getItem('token');
+      const resp = await fetch(`/api/admin/subjects/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.message || 'Failed to delete subject');
+      }
+      const updated = subjects.filter(s => s.id !== id);
+      setSubjects(updated);
+      computeStats(updated);
+      alert('Subject deleted successfully!');
+      try { localStorage.setItem('ssaems_subjects_dirty', String(Date.now())); } catch (_) {}
+    } catch (e) {
+      alert(e.message);
+    }
   }
 
   function clearAllAllocations() {
@@ -353,6 +466,101 @@ export default function AdminDashboard(){
     const userConfirmed = window.confirm(`Are you sure you want to deny ${requestIds.length} requests?`);
     if (!userConfirmed) return;
     requestIds.forEach(id => handleRequest(id, 'denied', 'Bulk denied by admin'));
+  }
+
+  // Admin utility: call backend to backfill missing subject codes
+  async function backfillSubjectCodes() {
+    const ok = window.confirm('Backfill missing subject codes for existing subjects? This will assign generated codes to any subject without one.');
+    if (!ok) return;
+    try {
+      const token = localStorage.getItem('token');
+      const resp = await fetch('/api/admin/subjects/backfill-codes', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.message || 'Backfill failed');
+      }
+      const data = await resp.json();
+      alert(`Backfill complete. ${data.updated || data.updatedCount || 0} subjects updated.`);
+      // reload subjects list
+      window.location.reload();
+    } catch (e) {
+      alert(e.message || 'Backfill failed');
+    }
+  }
+
+  // Admin utility: delete all subjects (destructive)
+  async function clearAllSubjects() {
+    const userConfirmed = window.confirm('DELETE ALL SUBJECTS? This cannot be undone. Are you sure?');
+    if (!userConfirmed) return;
+    try {
+      const token = localStorage.getItem('token');
+      const resp = await fetch('/api/admin/subjects', {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.message || 'Clear failed');
+      }
+      const data = await resp.json();
+      alert(data.message || 'All subjects cleared');
+      setSubjects([]);
+      computeStats([]);
+      try { localStorage.setItem('ssaems_subjects_dirty', String(Date.now())); } catch (_) {}
+    } catch (e) {
+      alert(e.message || 'Clear failed');
+    }
+  }
+
+  async function fetchRegisteredElectives() {
+    try {
+      const token = localStorage.getItem('token');
+      const resp = await fetch('/api/admin/registered-electives', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setRegisteredStudents(data.registrations || []);
+      } else {
+        setRegisteredStudents([]);
+      }
+    } catch (e) {
+      console.error('Failed to fetch registered electives', e);
+      setRegisteredStudents([]);
+    }
+  }
+
+  function downloadRegisteredElectivesExcel() {
+    if (registeredStudents.length === 0) {
+      alert('No registrations to download');
+      return;
+    }
+
+    // Create CSV content
+    let csv = 'Roll Number,Name,Email,Department,Year,Semester,CGPA,Priority 1,Priority 2,Priority 3,Priority 4,Priority 5\n';
+    
+    registeredStudents.forEach(student => {
+      const prefs = student.preferences || [];
+      const p1 = prefs[0] ? `${prefs[0].code} - ${prefs[0].title}` : '';
+      const p2 = prefs[1] ? `${prefs[1].code} - ${prefs[1].title}` : '';
+      const p3 = prefs[2] ? `${prefs[2].code} - ${prefs[2].title}` : '';
+      const p4 = prefs[3] ? `${prefs[3].code} - ${prefs[3].title}` : '';
+      const p5 = prefs[4] ? `${prefs[4].code} - ${prefs[4].title}` : '';
+      
+      csv += `${student.rollNumber},"${student.name}",${student.email},${student.department},${student.year},${student.semester},${student.cgpa},"${p1}","${p2}","${p3}","${p4}","${p5}"\n`;
+    });
+
+    // Download CSV
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `registered_electives_${new Date().toISOString().slice(0,10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   function StudentRequestsTable({ subjects, onHandleRequest, onBulkApprove, onBulkDeny }) {
@@ -598,7 +806,6 @@ export default function AdminDashboard(){
 
   function RequestAnalytics() {
     const requests = JSON.parse(localStorage.getItem('ssaems_requests')||'[]');
-    const subjects = getSubjects() || [];
     const analytics = {
       total: requests.length,
       pending: requests.filter(r => r.status === 'pending').length,
@@ -668,10 +875,11 @@ export default function AdminDashboard(){
           <p>Comprehensive management of the Smart Subject Allocation System</p>
         </div>
         <div className="card" style={{marginBottom: '24px'}}>
-          <div style={{display: 'flex', gap: '16px', flexWrap: 'wrap'}}>
+          <div style={{display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center'}}>
             {[
               {id: 'overview', label: 'Overview & Analytics'},
               {id: 'subjects', label: 'Subject Management'},
+              {id: 'registered', label: 'Registered Electives'},
               {id: 'allocation', label: 'Allocation Control'},
               {id: 'requests', label: 'Request Management'},
               {id: 'reports', label: 'Reports & History'},
@@ -685,6 +893,10 @@ export default function AdminDashboard(){
                 {tab.label}
               </button>
             ))}
+            <div style={{marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center'}}>
+              <button className="btn outline" style={{padding: '8px 12px'}} onClick={backfillSubjectCodes}>Backfill Missing Subject Codes</button>
+              <button className="btn outline" style={{padding: '8px 12px', background: '#fff', color: '#b91c1c', borderColor: '#fecaca'}} onClick={clearAllSubjects}>Clear All Subjects</button>
+            </div>
           </div>
         </div>
         {activeTab === 'overview' && (
@@ -793,7 +1005,7 @@ export default function AdminDashboard(){
                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'start'}}>
                       <div>
                         <h5>{subject.name}</h5>
-                        <p><strong>ID:</strong> {subject.id} | <strong>Credits:</strong> {subject.credits} | <strong>Hours:</strong> {subject.hours} | <strong>Capacity:</strong> {subject.capacity}</p>
+                        <p><strong>Code:</strong> {subject.code} | <strong>Credits:</strong> {subject.credits} | <strong>Hours:</strong> {subject.hours} | <strong>Capacity:</strong> {subject.capacity}</p>
                         <p><strong>Faculty:</strong> {subject.faculty}</p>
                         <p><strong>Year:</strong> {subject.year ? `${subject.year}${subject.year === '1' ? 'st' : subject.year === '2' ? 'nd' : subject.year === '3' ? 'rd' : 'th'} Year` : 'Not specified'} | <strong>Semester:</strong> {subject.semester ? `Semester ${subject.semester}` : 'Not specified'}</p>
                         <p><strong>Description:</strong> {subject.description}</p>
@@ -838,14 +1050,99 @@ export default function AdminDashboard(){
                     <option value="2">Semester 2</option>
                   </select>
                 </div>
-                <textarea placeholder="Description" value={editingSubject.description} onChange={e => setEditingSubject({...editingSubject, description: e.target.value})} style={{width: '100%', marginTop: '16px'}} />
-                <input placeholder="Topics (comma-separated)" value={editingSubject.topics} onChange={e => setEditingSubject({...editingSubject, topics: e.target.value})} style={{width: '100%', marginTop: '8px'}} />
+                <textarea placeholder="Description" value={editingSubject.description || ''} onChange={e => setEditingSubject({...editingSubject, description: e.target.value})} style={{width: '100%', marginTop: '16px'}} />
+                <input placeholder="Topics (comma-separated)" value={Array.isArray(editingSubject.topics) ? editingSubject.topics.join(', ') : editingSubject.topics || ''} onChange={e => setEditingSubject({...editingSubject, topics: e.target.value})} style={{width: '100%', marginTop: '8px'}} />
                 <div style={{marginTop: '16px', display: 'flex', gap: '8px'}}>
                   <button className="btn" onClick={updateSubject}>Update Subject</button>
                   <button className="btn outline" onClick={() => setEditingSubject(null)}>Cancel</button>
                 </div>
               </div>
             )}
+          </div>
+        )}
+        {activeTab === 'registered' && (
+          <div>
+            <div className="card">
+              <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px'}}>
+                <h4>Registered Electives</h4>
+                <div style={{display: 'flex', gap: '8px'}}>
+                  <button className="btn" style={btnStyle} onClick={fetchRegisteredElectives}>
+                    Refresh
+                  </button>
+                  <button className="btn" style={{...btnStyle, background: 'linear-gradient(135deg, #16a34a, #15803d)'}} onClick={downloadRegisteredElectivesExcel}>
+                    Download Excel
+                  </button>
+                </div>
+              </div>
+              
+              {registeredStudents.length === 0 ? (
+                <p style={{color: '#666', textAlign: 'center', padding: '24px'}}>No students have registered their preferences yet.</p>
+              ) : (
+                <div>
+                  <p style={{color: '#666', marginBottom: '16px'}}>
+                    Total Registrations: <strong>{registeredStudents.length}</strong> students
+                    {registeredStudents.length > 0 && (
+                      <span style={{marginLeft: '16px'}}>
+                        | Locked: <strong>{registeredStudents.filter(s => s.preferencesLocked).length}</strong>
+                      </span>
+                    )}
+                  </p>
+                  <div style={{overflowX: 'auto'}}>
+                    <table style={{width: '100%', borderCollapse: 'collapse', fontSize: '14px'}}>
+                      <thead>
+                        <tr style={{borderBottom: '2px solid #e2e8f0', background: '#f8fafc'}}>
+                          <th style={{padding: '12px 8px', textAlign: 'left'}}>Roll No</th>
+                          <th style={{padding: '12px 8px', textAlign: 'left'}}>Name</th>
+                          <th style={{padding: '12px 8px', textAlign: 'left'}}>Email</th>
+                          <th style={{padding: '12px 8px', textAlign: 'left'}}>Year/Sem</th>
+                          <th style={{padding: '12px 8px', textAlign: 'left'}}>CGPA</th>
+                          <th style={{padding: '12px 8px', textAlign: 'left'}}>Status</th>
+                          <th style={{padding: '12px 8px', textAlign: 'left'}}>Preferences</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {registeredStudents.map(student => (
+                          <tr key={student.studentId} style={{borderBottom: '1px solid #e2e8f0', background: student.preferencesLocked ? '#f0fdf4' : 'transparent'}}>
+                            <td style={{padding: '12px 8px'}}>{student.rollNumber}</td>
+                            <td style={{padding: '12px 8px'}}>{student.name}</td>
+                            <td style={{padding: '12px 8px', fontSize: '12px', color: '#64748b'}}>{student.email}</td>
+                            <td style={{padding: '12px 8px'}}>Y{student.year}/S{student.semester}</td>
+                            <td style={{padding: '12px 8px'}}>{student.cgpa}</td>
+                            <td style={{padding: '12px 8px'}}>
+                              {student.preferencesLocked ? (
+                                <span style={{color: '#16a34a', fontSize: '12px', fontWeight: 'bold'}}>
+                                  🔒 Locked
+                                </span>
+                              ) : (
+                                <span style={{color: '#f59e0b', fontSize: '12px'}}>
+                                  Draft
+                                </span>
+                              )}
+                              {student.submittedAt && (
+                                <div style={{fontSize: '10px', color: '#64748b', marginTop: '2px'}}>
+                                  {new Date(student.submittedAt).toLocaleDateString()}
+                                </div>
+                              )}
+                            </td>
+                            <td style={{padding: '12px 8px'}}>
+                              <div style={{display: 'flex', flexDirection: 'column', gap: '4px'}}>
+                                {(student.preferences || []).map((pref, idx) => (
+                                  <div key={idx} style={{fontSize: '12px'}}>
+                                    <span style={{fontWeight: 'bold', color: '#1976d2'}}>#{pref.priority}</span>
+                                    {' '}
+                                    <span style={{color: '#334155'}}>{pref.code} - {pref.title}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
         {activeTab === 'allocation' && (
@@ -996,9 +1293,9 @@ export default function AdminDashboard(){
                   <h6>Total Users</h6>
                   <p>{JSON.parse(localStorage.getItem('ssaems_users')||'[]').length}</p>
                 </div>
-              </div>
-            </div>
           </div>
+        </div>
+        </div>
         )}
       </main>
 

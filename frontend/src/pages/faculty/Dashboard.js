@@ -34,20 +34,6 @@ import {
 const FacultyDashboard = () => {
   const navigate = useNavigate();
 
-  React.useEffect(() => {
-    const token = localStorage.getItem('token');
-    const userType = localStorage.getItem('userType');
-    if (!token || userType !== 'faculty') {
-      navigate('/login');
-    }
-  }, [navigate]);
-
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('userType');
-    navigate('/login');
-  };
-
   // Header style for consistency across dashboards
   const headerStyle = {
     padding: '1rem',
@@ -59,15 +45,19 @@ const FacultyDashboard = () => {
     alignItems: 'center'
   };
 
-  // Placeholder faculty profile (no backend)
-  const faculty = {
-    name: 'Dr. Jane Smith',
-    designation: 'Associate Professor',
-    experience: 8,
-    coursesTaught: 4,
+  // Dynamic faculty state (will fetch real subjects/information later)
+  const [faculty, setFaculty] = React.useState({
+    name: 'Loading...',
+    designation: '',
+    experience: 0,
+    coursesTaught: 0,
     studentsAllocated: 0,
-    courseIds: ['CS505', 'CS507'], // demo courses handled by this faculty
-  };
+    courseIds: [],
+  });
+  const [loadingProfile, setLoadingProfile] = React.useState(true);
+  const [loadingRequests, setLoadingRequests] = React.useState(true);
+  const [loadingAllocations, setLoadingAllocations] = React.useState(true);
+  const [error, setError] = React.useState('');
 
   const [allottedStudents, setAllottedStudents] = React.useState([]);
   const [requests, setRequests] = React.useState([]);
@@ -80,46 +70,115 @@ const FacultyDashboard = () => {
   const [reqOpen, setReqOpen] = React.useState(false);
   const [reqIndex, setReqIndex] = React.useState(null);
 
-  const seedAllottedIfMissing = () => {
+  // Fetch subjects taught by this faculty
+  const fetchFacultySubjects = React.useCallback(async () => {
+    setLoadingProfile(true);
     try {
-      const raw = localStorage.getItem('ssaems_allotted_students');
-      if (raw) return JSON.parse(raw);
-    } catch (_) {}
-    // Seed demo data (would be replaced by backend)
-    const demo = [
-      { name: 'John Doe', regd: 'STU2023001', courseId: 'CS505', courseName: 'Cybersecurity Basics' },
-      { name: 'Alice Johnson', regd: 'STU2023013', courseId: 'CS507', courseName: 'IoT Systems' },
-      { name: 'Ravi Kumar', regd: 'STU2023056', courseId: 'CS505', courseName: 'Cybersecurity Basics' },
-    ];
-    localStorage.setItem('ssaems_allotted_students', JSON.stringify(demo));
-    return demo;
-  };
-
-  const loadData = React.useCallback(() => {
-    const all = seedAllottedIfMissing();
-    const forMe = all.filter((s) => faculty.courseIds.includes(s.courseId));
-    setAllottedStudents(forMe);
-    try {
-      const rawReq = localStorage.getItem('ssaems_change_requests');
-      const arr = rawReq ? JSON.parse(rawReq) : [];
-      // Filter requests by preferred course to only show items relevant to faculty’s handled courses
-      const filtered = arr.filter((r) => r.newCourse && faculty.courseIds.includes(r.newCourse));
-      setRequests(filtered.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')));
-    } catch (_) {
-      setRequests([]);
+      const token = localStorage.getItem('token');
+      const resp = await fetch('/api/faculty/my-subjects', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!resp.ok) throw new Error('Failed to load faculty subjects');
+      const data = await resp.json();
+      const subjects = data.subjects || [];
+      setFaculty((prev) => ({
+        ...prev,
+        name: (JSON.parse(localStorage.getItem('user')||'{}').name) || prev.name,
+        designation: prev.designation || 'Faculty',
+        coursesTaught: subjects.length,
+        courseIds: subjects.map(s => s.code || s._id).filter(Boolean),
+      }));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoadingProfile(false);
     }
   }, []);
 
+  const fetchChangeRequests = React.useCallback(async () => {
+    setLoadingRequests(true);
+    try {
+      const token = localStorage.getItem('token');
+      const resp = await fetch('/api/faculty/change-requests?status=pending', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!resp.ok) throw new Error('Failed to load change requests');
+      const data = await resp.json();
+      const mapped = (data.requests || []).map(r => ({
+        id: r._id,
+        userId: r.student?.rollNumber || 'Unknown',
+        wantsChange: 'yes',
+        reason: r.reason || '',
+        newCourse: r.requestedSubject?.code || r.requestedSubject?.title || 'Unknown',
+        status: r.status === 'pending' ? null : r.status,
+        createdAt: r.createdAt,
+        raw: r,
+      }));
+      setRequests(mapped);
+    } catch (e) {
+      setError(e.message);
+      setRequests([]);
+    } finally {
+      setLoadingRequests(false);
+    }
+  }, []);
+
+  const fetchAllocations = React.useCallback(async () => {
+    setLoadingAllocations(true);
+    try {
+      const token = localStorage.getItem('token');
+      // Fetch all allocations (backend can be filtered by subjectId in the future)
+      const resp = await fetch('/api/faculty/allocations', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!resp.ok) throw new Error('Failed to load allocations');
+      const data = await resp.json();
+      const rows = (data.allocations || []).map(a => ({
+        name: a.student?.name || 'Unknown',
+        regd: a.student?.rollNumber || '-',
+        courseId: a.subject?.code || a.subject?._id,
+        courseName: a.subject?.title || '-',
+      }));
+      setAllottedStudents(rows);
+    } catch (e) {
+      setError(e.message);
+      setAllottedStudents([]);
+    } finally {
+      setLoadingAllocations(false);
+    }
+  }, [faculty.courseIds]);
+
   React.useEffect(() => {
-    loadData();
-  }, [loadData]);
+    fetchFacultySubjects();
+  }, [fetchFacultySubjects]);
+
+  React.useEffect(() => {
+    if (faculty.courseIds.length > 0) {
+      fetchChangeRequests();
+      fetchAllocations();
+    }
+  }, [faculty.courseIds, fetchChangeRequests, fetchAllocations]);
+
+  const approveOrDeny = async (idx, action) => {
+    try {
+      const token = localStorage.getItem('token');
+      const reqObj = requests[idx];
+      if (!reqObj) return;
+      const resp = await fetch('/api/faculty/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ requestId: reqObj.id, action })
+      });
+      if (!resp.ok) throw new Error('Failed to update request');
+      await fetchChangeRequests();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
 
   const updateRequestStatus = (idx, status) => {
-    const updated = requests.map((r, i) => (i === idx ? { ...r, status } : r));
-    setRequests(updated);
-    try {
-      localStorage.setItem('ssaems_change_requests', JSON.stringify(updated));
-    } catch (_) {}
+    // Legacy local update replaced by approveOrDeny
+    approveOrDeny(idx, status === 'approved' ? 'approve' : 'deny');
   };
 
   const filteredRequests = React.useMemo(() => {
@@ -148,14 +207,6 @@ const FacultyDashboard = () => {
             Welcome, {faculty.name}
           </Typography>
         </Box>
-        <Button
-          variant="contained"
-          color="error"
-          onClick={handleLogout}
-          sx={{ fontWeight: 500 }}
-        >
-          Logout
-        </Button>
       </Box>
 
       <Grid container spacing={3} alignItems="stretch">
@@ -209,7 +260,7 @@ const FacultyDashboard = () => {
               <Typography variant="body2" color="text.secondary">Use the Student Requests page to approve or deny change requests.</Typography>
             </Box>
             <Box sx={{ mt: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-              <Button size="small" variant="outlined" startIcon={<RefreshIcon />} onClick={loadData}>Refresh</Button>
+              <Button size="small" variant="outlined" startIcon={<RefreshIcon />} onClick={() => { fetchFacultySubjects(); fetchChangeRequests(); fetchAllocations(); }}>Refresh</Button>
               <Button size="small" variant="contained" startIcon={<DownloadIcon />} onClick={() => exportStudentsCsv(allottedStudents)}>Export CSV</Button>
             </Box>
           </Paper>
@@ -219,7 +270,7 @@ const FacultyDashboard = () => {
         <Grid item xs={12} md={6}>
           <Paper sx={{ p: { xs: 2, md: 3 } }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-              <Typography variant="h6" sx={{ fontWeight: 600 }}>Student Requests</Typography>
+              <Typography variant="h6" sx={{ fontWeight: 600 }}>Student Change Requests {loadingRequests && '…'}</Typography>
               <Stack direction="row" spacing={1} alignItems="center">
                 <Stack direction="row" spacing={1} alignItems="center">
                   <FilterAltIcon fontSize="small" />
@@ -231,7 +282,12 @@ const FacultyDashboard = () => {
                 <Chip label={`${filteredRequests.filter(r => !r.status).length} pending`} color="warning" />
               </Stack>
             </Box>
-            {filteredRequests.length === 0 ? (
+            {error && (
+              <Typography color="error" sx={{ mb:2 }}>{error}</Typography>
+            )}
+            {loadingRequests && filteredRequests.length === 0 ? (
+              <Typography color="text.secondary">Loading requests…</Typography>
+            ) : filteredRequests.length === 0 ? (
               <Typography color="text.secondary">No student requests found.</Typography>
             ) : (
               <List>
@@ -259,7 +315,7 @@ const FacultyDashboard = () => {
                         )}
                       />
                       <Stack direction="row" spacing={1}>
-                        {!r.status && (
+                        {!r.status && !loadingRequests && (
                           <>
                             <Button size="small" variant="contained" color="success" onClick={() => updateRequestStatus(idx, 'approved')}>Approve</Button>
                             <Button size="small" variant="outlined" onClick={() => updateRequestStatus(idx, 'denied')}>Deny</Button>

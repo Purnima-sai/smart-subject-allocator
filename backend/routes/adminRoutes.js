@@ -21,8 +21,16 @@ router.post('/subjects', authenticate, authorizeRoles('admin'), adminController.
 router.get('/subjects', authenticate, authorizeRoles('admin'), adminController.listSubjects);
 router.put('/subjects/:id', authenticate, authorizeRoles('admin'), adminController.updateSubject);
 router.delete('/subjects/:id', authenticate, authorizeRoles('admin'), adminController.deleteSubject);
+// seed sample subjects (admin only)
+router.post('/subjects/seed', authenticate, authorizeRoles('admin'), adminController.seedDefaults);
+// admin utilities
+router.post('/subjects/backfill-codes', authenticate, authorizeRoles('admin'), adminController.backfillSubjectCodes);
+router.delete('/subjects', authenticate, authorizeRoles('admin'), adminController.clearAllSubjects);
 
 // exports (admin only)
 router.get('/export-allotments', authenticate, authorizeRoles('admin'), adminController.exportAllotments);
+
+// get registered student preferences (admin only)
+router.get('/registered-electives', authenticate, authorizeRoles('admin'), adminController.getRegisteredElectives);
 
 module.exports = router;

@@ -8,7 +8,12 @@
     "dev": "nodemon server.js",
     "seed": "node scripts/seed.js",
     "test": "node tests/run_tests.js",
-    "test:integration": "node tests/run_integration.js"
+    "test:integration": "node tests/run_integration.js",
+  "test:verify": "node tests/verify_flow.js",
+    "import:students": "node scripts/importStudentsFromCSV.js",
+    "verify:students": "node scripts/verifyStudentImport.js",
+    "admin:control": "node scripts/adminDatabaseControl.js",
+    "create:indexes": "node scripts/createDatabaseIndexes.js"
   },
   "engines": {
     "node": ">=14"
