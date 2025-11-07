@@ -1,0 +1,62 @@
+{
+  "info": {
+    "name": "SSAEMS Backend - Postman Collection",
+    "_postman_id": "d6b8f9a8-0000-4000-8000-000000000001",
+    "description": "Collection to test SSAEMS backend APIs. Set the environment variable `base_url` to your server (default http://localhost:3000).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "auth_token",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth - Login",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"username\": \"admin@example.com\",\n  \"password\": \"password\"\n}"
+        },
+        "url": { "raw": "{{base_url}}/api/auth/login", "host": ["{{base_url}}"], "path": ["api","auth","login"] }
+      }
+    },
+    {
+      "name": "Faculty - Create",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Dr. Alice Smith\",\n  \"email\": \"alice.smith@university.edu\",\n  \"department\": \"Computer Science\"\n}"
+        },
+        "url": { "raw": "{{base_url}}/api/faculty", "host": ["{{base_url}}"], "path": ["api","faculty"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Faculty - List",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "url": { "raw": "{{base_url}}/api/faculty", "host": ["{{base_url}}"], "path": ["api","faculty"] }
+      }
+    }
+  ]
+}
